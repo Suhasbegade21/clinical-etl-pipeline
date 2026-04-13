@@ -1,65 +1,95 @@
 import streamlit as st
 import requests
+import pandas as pd
 
-# 1. Page Configuration
-st.set_page_config(page_title="Clinical ETL Dashboard", page_icon="🏥", layout="wide")
+# Set page layout to be wide and professional
+st.set_page_config(page_title="Clinical ETL Pipeline", layout="wide")
 
-# 2. Header Section
-st.title("🏥 Clinical NLP & ETL Pipeline")
-st.markdown("""
-Welcome to the Clinical Data Engine. Type a raw doctor's note below. 
-Our spaCy NLP model will extract the entities and our FastAPI backend will load them into the PostgreSQL Data Warehouse.
-""")
-st.divider()
+st.title("🏥 Clinical ETL & Data Mining Pipeline")
 
-# 3. Input Section
-col1, col2 = st.columns([1, 3])
-with col1:
-    patient_id = st.text_input("Patient ID", value="PT-1002")
-with col2:
-    raw_text = st.text_area("Doctor's Note (Raw Text)", height=150, value="Patient presents with severe chest pain and pneumonia. I am prescribing them Aspirin and Amoxicillin.")
+# Create two clean tabs for navigation
+tab1, tab2 = st.tabs(["🩺 AI Extraction Engine", "📊 OLAP Data Mining Dashboard"])
 
-# 4. Action Button
-if st.button("🚀 Run Extraction Pipeline", type="primary"):
-    if raw_text.strip() == "":
-        st.warning("Please enter a doctor's note first.")
-    else:
-        with st.spinner("Processing through NLP Pipeline & Saving to Data Warehouse..."):
-            
-            # 5. Send the data to your FastAPI Backend
-            api_url = "http://127.0.0.1:8000/extract"
-            payload = {"patient_id": patient_id, "raw_text": raw_text}
-            
+# ==========================================
+# TAB 1: THE EXTRACTION PIPELINE
+# ==========================================
+with tab1:
+    st.header("Process New Clinical Note")
+    st.markdown("Paste raw unstructured medical text below to extract entities and load them into the Star Schema.")
+    
+    # Input fields
+    patient_id_input = st.text_input("Patient ID:", value="PT-001")
+    note_text = st.text_area("Doctor's Note:", height=150)
+
+    if st.button("Run ETL Pipeline"):
+        if note_text and patient_id_input:
             try:
-                response = requests.post(api_url, json=payload)
+                # Payload matches exactly what FastAPI expects
+                payload = {
+                    "patient_id": patient_id_input,
+                    "raw_text": note_text
+                }
+                
+                # Send data to the Fast API backend
+                response = requests.post("http://127.0.0.1:8000/extract", json=payload)
                 
                 if response.status_code == 200:
-                    result = response.json()
-                    st.success(f"✅ {result['message']}")
-                    
-                    # 6. Display the Results Beautifully
-                    st.subheader("🧠 AI Extraction Results")
-                    res_col1, res_col2 = st.columns(2)
-                    
-                    with res_col1:
-                        st.info("🦠 Extracted Conditions")
-                        conditions = result["extracted_data"].get("Conditions", [])
-                        if conditions:
-                            for c in conditions:
-                                st.write(f"- **{c}**")
-                        else:
-                            st.write("None found.")
-                            
-                    with res_col2:
-                        st.warning("💊 Extracted Medications")
-                        meds = result["extracted_data"].get("Medications", [])
-                        if meds:
-                            for m in meds:
-                                st.write(f"- **{m}**")
-                        else:
-                            st.write("None found.")
+                    st.success("✅ Successfully processed and loaded into PostgreSQL Star Schema!")
+                    st.json(response.json())
                 else:
-                    st.error(f"API Error: {response.text}")
+                    st.error(f"Backend Error: {response.status_code}")
+                    st.json(response.json()) 
+            except Exception as e:
+                st.error("Could not connect to the Backend API. Is your FastAPI server running on port 8000?")
+        else:
+            st.warning("Please enter both a Patient ID and the Clinical Note before running.")
+
+# ==========================================
+# TAB 2: THE DATA MINING DASHBOARD
+# ==========================================
+with tab2:
+    st.header("Historical Data Patterns")
+    st.markdown("Querying the Star Schema for Frequency and Association Rules.")
+    
+    if st.button("Run Data Mining Analysis"):
+        try:
+            response = requests.get("http://127.0.0.1:8000/mine-data")
+            
+            if response.status_code == 200:
+                data = response.json()["mining_results"]
+                
+                col1, col2 = st.columns(2)
+                
+                # Chart 1: Top Conditions
+                with col1:
+                    st.subheader("Top Conditions")
+                    if data["top_conditions"]:
+                        df_cond = pd.DataFrame(data["top_conditions"])
+                        st.bar_chart(df_cond.set_index("condition"))
+                    else:
+                        st.info("No condition data found.")
+                        
+                # Chart 2: Top Medications
+                with col2:
+                    st.subheader("Top Medications")
+                    if data["top_medications"]:
+                        df_med = pd.DataFrame(data["top_medications"])
+                        st.bar_chart(df_med.set_index("medication"))
+                    else:
+                        st.info("No medication data found.")
+                
+                st.divider()
+                
+                # Table: Association Rule Mining
+                st.subheader("💊 Clinical Association Rules")
+                st.markdown("*Which medications are most frequently prescribed for which conditions?*")
+                
+                if data["frequent_associations"]:
+                    df_assoc = pd.DataFrame(data["frequent_associations"])
+                    df_assoc.columns = ["Condition Diagnosed", "Medication Prescribed", "Co-occurrence (Count)"]
+                    st.dataframe(df_assoc, use_container_width=True)
+                else:
+                    st.info("No association data found.")
                     
-            except requests.exceptions.ConnectionError:
-                st.error("🚨 Could not connect to the Backend API. Is your FastAPI server running on port 8000?")
+        except Exception as e:
+            st.error(f"Could not fetch mining data. Error: {e}")

@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from nlp_engine import extract_clinical_data
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 import models
 
 # This command automatically creates the tables in PostgreSQL if they don't exist!
@@ -90,30 +90,29 @@ from sqlalchemy import text
 def mine_clinical_data():
     db = SessionLocal()
     try:
-        # 1. Mine Top Conditions (Frequency Analysis)
+        # 1. Mine Top Conditions
         query_conditions = text("""
-            SELECT c.condition_name, COUNT(f.extraction_id) as frequency
+            SELECT c.condition_name, COUNT(*) as frequency
             FROM fact_clinical_extraction f
             JOIN dim_condition c ON f.condition_key = c.condition_key
             GROUP BY c.condition_name
             ORDER BY frequency DESC
             LIMIT 5;
         """)
-        top_conditions = [{"condition": row[0], "count": row[1]} for row in db.execute(query_conditions).fetchall()]
+        top_conditions = [{"condition": row[0], "count": row[1]} for row in db.execute(query_conditions).fetchall() if row[0]]
 
-        # 2. Mine Top Medications (Frequency Analysis)
+        # 2. Mine Top Medications
         query_meds = text("""
-            SELECT m.medication_name, COUNT(f.extraction_id) as frequency
+            SELECT m.medication_name, COUNT(*) as frequency
             FROM fact_clinical_extraction f
             JOIN dim_medication m ON f.medication_key = m.medication_key
             GROUP BY m.medication_name
             ORDER BY frequency DESC
             LIMIT 5;
         """)
-        top_medications = [{"medication": row[0], "count": row[1]} for row in db.execute(query_meds).fetchall()]
+        top_medications = [{"medication": row[0], "count": row[1]} for row in db.execute(query_meds).fetchall() if row[0]]
 
-        # 3. Association Rule Mining (Co-occurrence of Disease + Drug)
-        # "Which medications are most frequently prescribed for which conditions?"
+        # 3. Association Rule Mining
         query_associations = text("""
             SELECT c.condition_name, m.medication_name, COUNT(*) as co_occurrence
             FROM fact_clinical_extraction f
@@ -123,7 +122,7 @@ def mine_clinical_data():
             ORDER BY co_occurrence DESC
             LIMIT 10;
         """)
-        associations = [{"condition": row[0], "medication": row[1], "frequency": row[2]} for row in db.execute(query_associations).fetchall()]
+        associations = [{"condition": row[0], "medication": row[1], "frequency": row[2]} for row in db.execute(query_associations).fetchall() if row[0] and row[1]]
 
         return {
             "status": "success",
@@ -134,6 +133,7 @@ def mine_clinical_data():
             }
         }
     except Exception as e:
+        print(f"SQL MINING ERROR: {str(e)}") 
         return {"error": str(e)}
     finally:
         db.close()
