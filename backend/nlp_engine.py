@@ -1,60 +1,40 @@
 import spacy
+import scispacy
 
-# 1. Load the stable English NLP model we successfully downloaded
-print("Loading NLP Model...")
-nlp = spacy.load("en_core_web_sm")
+# Load the medical specialist model
+# It might take a few seconds to load the first time
+nlp = spacy.load("en_core_sci_sm")
 
-# 2. Add an Entity Ruler to "teach" the AI medical terms
-# (We put it *before* the standard NER so our medical rules take priority)
-ruler = nlp.add_pipe("entity_ruler", before="ner")
-
-# 3. Define our custom clinical dictionary (You can add to this later!)
-patterns = [
-    {"label": "CONDITION", "pattern": [{"LOWER": "hypertension"}]},
-    {"label": "CONDITION", "pattern": [{"LOWER": "diabetes"}]},
-    {"label": "CONDITION", "pattern": [{"LOWER": "pneumonia"}]},
-    {"label": "CONDITION", "pattern": [{"LOWER": "chest"}, {"LOWER": "pain"}]},
-    {"label": "MEDICATION", "pattern": [{"LOWER": "aspirin"}]},
-    {"label": "MEDICATION", "pattern": [{"LOWER": "metoprolol"}]},
-    {"label": "MEDICATION", "pattern": [{"LOWER": "amoxicillin"}]},
-    {"label": "MEDICATION", "pattern": [{"LOWER": "lisinopril"}]}
-]
-ruler.add_patterns(patterns)
-
-def extract_clinical_data(raw_text: str):
+def extract_clinical_data(text):
     """
-    Takes a raw doctor's note and extracts structured conditions and medications.
+    Uses scispaCy Named Entity Recognition to find 
+    medical conditions and medications automatically.
     """
-    # Feed the text to the AI
-    doc = nlp(raw_text)
+    doc = nlp(text)
     
-    # Create an empty dictionary to store our findings
-    extracted_data = {
-        "Conditions": [],
-        "Medications": []
-    }
+    extracted_conditions = []
+    extracted_medications = []
     
-    # Loop through all the entities the AI found
+    # scispaCy identifies 'ENTITIES' based on clinical context
     for ent in doc.ents:
-        # If it's a condition and not already in our list, add it
-        if ent.label_ == "CONDITION" and ent.text.title() not in extracted_data["Conditions"]:
-            extracted_data["Conditions"].append(ent.text.title())
-            
-        # If it's a medication and not already in our list, add it
-        elif ent.label_ == "MEDICATION" and ent.text.title() not in extracted_data["Medications"]:
-            extracted_data["Medications"].append(ent.text.title())
-            
-    return extracted_data
+        term = ent.text.title()
+        lower_term = ent.text.lower()
+        
+        # Sorting logic:
+        # We look for common drug indicators to separate meds from conditions.
+        drug_hints = [
+            'mg', 'tablet', 'capsule', 'pill', 'dose', 'mcg', 
+            'solution', 'intravenous', 'iv', 'oral', 'daily', 'bid', 'tid'
+        ]
+        
+        # Check if it looks like a drug or has a common pharmaceutical suffix
+        if any(hint in lower_term for hint in drug_hints) or lower_term.endswith(('in', 'ol', 'id', 'pam')):
+            extracted_medications.append(term)
+        else:
+            # Otherwise, categorize as a condition/diagnosis/symptom
+            extracted_conditions.append(term)
 
-# --- Quick Test Block ---
-# This only runs if you execute this specific file directly
-if __name__ == "__main__":
-    sample_note = "Patient is a 45-year-old male presenting with severe chest pain and a history of hypertension. Prescribed 100mg of Metoprolol and daily Aspirin."
-    
-    print("\n--- Raw Doctor's Note ---")
-    print(sample_note)
-    
-    print("\n--- AI Extraction Results ---")
-    results = extract_clinical_data(sample_note)
-    print(results)
-    print("\n")
+    return {
+        "Conditions": list(set(extracted_conditions)),
+        "Medications": list(set(extracted_medications))
+    }

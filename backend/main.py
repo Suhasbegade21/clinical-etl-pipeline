@@ -1,128 +1,140 @@
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from nlp_engine import extract_clinical_data
-from database import engine, get_db, SessionLocal
-import models
+from sqlalchemy import text
+import uvicorn
+import sys
 
-# This command automatically creates the tables in PostgreSQL if they don't exist!
-models.Base.metadata.create_all(bind=engine)
+# 1. Bring back your AI Engine!
+from nlp_engine import extract_clinical_data
+
+# 2. Database Connection Import
+try:
+    from database import SessionLocal
+except ImportError:
+    print("CRITICAL ERROR: database.py not found or SessionLocal not defined.")
+    sys.exit(1)
 
 app = FastAPI(title="Clinical ETL Pipeline API", version="1.0")
 
-class ClinicalNote(BaseModel):
+# Enable CORS for frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- MODELS ---
+class ExtractRequest(BaseModel):
     patient_id: str
     raw_text: str
+
+class DeleteEntityRequest(BaseModel):
+    patient_id: str
+    entity_type: str
+    entity_name: str
 
 @app.get("/")
 def read_root():
     return {"Status": "API is online, AI is loaded, Database is connected. Ready for ETL."}
 
+# --- 1. EXTRACTION PIPELINE ---
 @app.post("/extract")
-def process_clinical_note(note: ClinicalNote, db: Session = Depends(get_db)):
-    # --- 1. EXTRACT & TRANSFORM (NLP AI) ---
-    ai_results = extract_clinical_data(note.raw_text)
-    
-    # --- 2. LOAD (Database Insertion) ---
-    
-    # Check if Patient exists, if not, create them
-    patient = db.query(models.DimPatient).filter(models.DimPatient.patient_id == note.patient_id).first()
-    if not patient:
-        patient = models.DimPatient(patient_id=note.patient_id, age_group="Unknown", gender="Unknown")
-        db.add(patient)
+def extract_clinical_data_endpoint(req: ExtractRequest):
+    db = SessionLocal()
+    try:
+        # A. RUN THE REAL AI NLP ENGINE
+        ai_results = extract_clinical_data(req.raw_text)
+        extracted_conditions = ai_results.get("Conditions", [])
+        extracted_medications = ai_results.get("Medications", [])
+
+        # B. Handle Dim_Patient 
+        db.execute(text("""
+            INSERT INTO Dim_Patient (Patient_ID) 
+            VALUES (:pid) 
+            ON CONFLICT (Patient_ID) DO NOTHING
+        """), {"pid": req.patient_id})
         db.commit()
-        db.refresh(patient)
 
-    extracted_conditions = ai_results.get("Conditions", [])
-    extracted_medications = ai_results.get("Medications", [])
-    
-    condition_keys = []
-    medication_keys = []
+        # Get the internal Patient_Key
+        result = db.execute(text("SELECT Patient_Key FROM Dim_Patient WHERE Patient_ID = :pid"), {"pid": req.patient_id})
+        row = result.fetchone()
+        if not row:
+            raise Exception("Patient could not be created or found.")
+        p_key = row[0]
 
-    # Process Conditions
-    for c_name in extracted_conditions:
-        cond = db.query(models.DimCondition).filter(models.DimCondition.condition_name == c_name).first()
-        if not cond:
-            cond = models.DimCondition(condition_name=c_name)
-            db.add(cond)
+        # C. Save Conditions to Fact table
+        for cond in extracted_conditions:
+            db.execute(text("INSERT INTO Dim_Condition (Condition_Name) VALUES (:name) ON CONFLICT DO NOTHING"), {"name": cond})
             db.commit()
-            db.refresh(cond)
-        condition_keys.append(cond.condition_key)
+            db.execute(text("""
+                INSERT INTO Fact_Clinical_Extraction (Patient_Key, Condition_Key, Raw_Text)
+                SELECT :p_key, Condition_Key, :raw 
+                FROM Dim_Condition WHERE Condition_Name = :name
+            """), {"p_key": p_key, "name": cond, "raw": req.raw_text})
 
-    # Process Medications
-    for m_name in extracted_medications:
-        med = db.query(models.DimMedication).filter(models.DimMedication.medication_name == m_name).first()
-        if not med:
-            med = models.DimMedication(medication_name=m_name)
-            db.add(med)
+        # D. Save Medications to Fact table
+        for med in extracted_medications:
+            db.execute(text("INSERT INTO Dim_Medication (Medication_Name) VALUES (:name) ON CONFLICT DO NOTHING"), {"name": med})
             db.commit()
-            db.refresh(med)
-        medication_keys.append(med.medication_key)
+            db.execute(text("""
+                INSERT INTO Fact_Clinical_Extraction (Patient_Key, Medication_Key, Raw_Text)
+                SELECT :p_key, Medication_Key, :raw 
+                FROM Dim_Medication WHERE Medication_Name = :name
+            """), {"p_key": p_key, "name": med, "raw": req.raw_text})
 
-    # If no conditions or meds were found, we still want to record the text, so we use None (Null)
-    if not condition_keys: condition_keys = [None]
-    if not medication_keys: medication_keys = [None]
+        db.commit()
+        
+        # Send the LIVE AI results back to the frontend
+        return {
+            "message": "ETL Pipeline Executed Successfully.",
+            "extraction": {
+                "conditions": extracted_conditions,
+                "medications": extracted_medications
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        print(f"DATABASE ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
-    # Insert into the Fact Table
-    for c_key in condition_keys:
-        for m_key in medication_keys:
-            fact_record = models.FactExtraction(
-                patient_key=patient.patient_key,
-                condition_key=c_key,
-                medication_key=m_key,
-                raw_text=note.raw_text
-            )
-            db.add(fact_record)
-    
-    db.commit()
-
-    return {
-        "message": "ETL Pipeline Executed Successfully. Data saved to Warehouse.",
-        "patient_id": patient.patient_id,
-        "extracted_data": ai_results
-    }
-
-from sqlalchemy import text
-# (Make sure you already have your db connection imports at the top of the file, 
-# like: from database import SessionLocal)
-
+# --- 2. ANALYTICS (MINING) ---
 @app.get("/mine-data")
 def mine_clinical_data():
     db = SessionLocal()
     try:
-        # 1. Mine Top Conditions
+        # Count Conditions (LIMIT removed to show all)
         query_conditions = text("""
-            SELECT c.condition_name, COUNT(*) as frequency
-            FROM fact_clinical_extraction f
-            JOIN dim_condition c ON f.condition_key = c.condition_key
-            GROUP BY c.condition_name
-            ORDER BY frequency DESC
-            LIMIT 5;
+            SELECT c.Condition_Name, COUNT(*) as frequency
+            FROM Fact_Clinical_Extraction f
+            JOIN Dim_Condition c ON f.Condition_Key = c.Condition_Key
+            GROUP BY c.Condition_Name ORDER BY frequency DESC;
         """)
-        top_conditions = [{"condition": row[0], "count": row[1]} for row in db.execute(query_conditions).fetchall() if row[0]]
+        top_conditions = [{"condition": row[0], "count": row[1]} for row in db.execute(query_conditions).fetchall()]
 
-        # 2. Mine Top Medications
+        # Count Medications (LIMIT removed to show all)
         query_meds = text("""
-            SELECT m.medication_name, COUNT(*) as frequency
-            FROM fact_clinical_extraction f
-            JOIN dim_medication m ON f.medication_key = m.medication_key
-            GROUP BY m.medication_name
-            ORDER BY frequency DESC
-            LIMIT 5;
+            SELECT m.Medication_Name, COUNT(*) as frequency
+            FROM Fact_Clinical_Extraction f
+            JOIN Dim_Medication m ON f.Medication_Key = m.Medication_Key
+            GROUP BY m.Medication_Name ORDER BY frequency DESC;
         """)
-        top_medications = [{"medication": row[0], "count": row[1]} for row in db.execute(query_meds).fetchall() if row[0]]
+        top_medications = [{"medication": row[0], "count": row[1]} for row in db.execute(query_meds).fetchall()]
 
-        # 3. Association Rule Mining
+        # Association Rule Mining (LIMIT removed to show all connections)
         query_associations = text("""
-            SELECT c.condition_name, m.medication_name, COUNT(*) as co_occurrence
-            FROM fact_clinical_extraction f
-            JOIN dim_condition c ON f.condition_key = c.condition_key
-            JOIN dim_medication m ON f.medication_key = m.medication_key
-            GROUP BY c.condition_name, m.medication_name
-            ORDER BY co_occurrence DESC
-            LIMIT 10;
+            SELECT c.Condition_Name, m.Medication_Name, COUNT(*) as co_occurrence
+            FROM Fact_Clinical_Extraction f
+            JOIN Dim_Condition c ON f.Condition_Key = c.Condition_Key
+            JOIN Dim_Medication m ON f.Medication_Key = m.Medication_Key
+            GROUP BY c.Condition_Name, m.Medication_Name
+            ORDER BY co_occurrence DESC;
         """)
-        associations = [{"condition": row[0], "medication": row[1], "frequency": row[2]} for row in db.execute(query_associations).fetchall() if row[0] and row[1]]
+        associations = [{"condition": row[0], "medication": row[1], "frequency": row[2]} for row in db.execute(query_associations).fetchall()]
 
         return {
             "status": "success",
@@ -133,7 +145,38 @@ def mine_clinical_data():
             }
         }
     except Exception as e:
-        print(f"SQL MINING ERROR: {str(e)}") 
+        print(f"MINING ERROR: {e}")
         return {"error": str(e)}
     finally:
         db.close()
+
+# --- 3. DELETE DATA ---
+@app.delete("/delete-entity")
+def delete_extracted_entity(req: DeleteEntityRequest):
+    db = SessionLocal()
+    try:
+        if req.entity_type == "condition":
+            sql = text("""
+                DELETE FROM Fact_Clinical_Extraction 
+                WHERE Patient_Key IN (SELECT Patient_Key FROM Dim_Patient WHERE Patient_ID = :pid)
+                AND Condition_Key IN (SELECT Condition_Key FROM Dim_Condition WHERE Condition_Name = :name);
+            """)
+        else:
+            sql = text("""
+                DELETE FROM Fact_Clinical_Extraction 
+                WHERE Patient_Key IN (SELECT Patient_Key FROM Dim_Patient WHERE Patient_ID = :pid)
+                AND Medication_Key IN (SELECT Medication_Key FROM Dim_Medication WHERE Medication_Name = :name);
+            """)
+        
+        db.execute(sql, {"pid": req.patient_id, "name": req.entity_name})
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        print(f"DELETE ERROR: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinical AI Hub</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+        
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #000000;
+            --border-color: rgba(0,0,0,0.1);
+            --sidebar-bg: #f9f9f9;
+            --tooltip-bg: rgba(60, 60, 60, 0.95);
+            --list-sep: rgba(0, 0, 0, 0.08);
+            --active-bg: rgba(59, 130, 246, 0.1);
+            --menu-bg: #ffffff;
+        }
+
+        .dark {
+            --bg-color: #000000;
+            --text-color: #ffffff;
+            --border-color: rgba(255,255,255,0.1);
+            --sidebar-bg: #0a0a0a;
+            --tooltip-bg: rgba(40, 40, 40, 0.95);
+            --list-sep: rgba(255, 255, 255, 0.1);
+            --active-bg: rgba(59, 130, 246, 0.15);
+            --menu-bg: #1f2937;
+        }
+
+        body { 
+            font-family: 'Inter', -apple-system, sans-serif; 
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0; display: flex; height: 100vh; overflow: hidden; 
+        }
+
+        .glass-input {
+            background: rgba(128, 128, 128, 0.08);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+        }
+
+        .sidebar { 
+            background-color: var(--sidebar-bg); 
+            border-right: 1px solid var(--border-color); 
+            width: 16rem; height: 100vh; flex-shrink: 0;
+            display: flex; flex-direction: column; 
+            padding: 1.5rem; overflow: hidden;
+        }
+
+        main { flex: 1; height: 100vh; overflow-y: auto; padding: 3rem; }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.2); border-radius: 10px; }
+        
+        main::-webkit-scrollbar { width: 6px; }
+        main::-webkit-scrollbar-track { background: transparent; }
+        main::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.2); border-radius: 10px; }
+
+        .item-row { border-bottom: 1px solid var(--list-sep); }
+
+        [data-tooltip] { position: relative; }
+        [data-tooltip]:before {            
+            content: attr(data-tooltip);
+            position: absolute; bottom: 150%; left: 50%; transform: translateX(-50%);
+            padding: 6px 12px; background: var(--tooltip-bg); color: #fff;
+            font-size: 10px; font-weight: 600; text-transform: uppercase;
+            border-radius: 8px; opacity: 0; visibility: hidden; transition: all 0.2s ease; z-index: 100;
+        }
+        [data-tooltip]:hover:before { opacity: 1; visibility: visible; bottom: 140%; }
+        select option { background: var(--bg-color); color: var(--text-color); }
+    </style>
+</head>
+<body>
+
+    <aside class="sidebar" onclick="closeAllMenus()">
+        <h2 class="text-xl font-semibold tracking-tight mb-6 px-2">Patients</h2>
+        
+        <button onclick="createNewPatient()" class="flex items-center gap-3 w-full p-3 rounded-xl border border-dashed border-blue-500/50 hover:bg-blue-500/10 text-blue-500 transition-all mb-4">
+            <i data-lucide="plus" class="w-4 h-4"></i>
+            <span class="text-sm font-medium">New Patient</span>
+        </button>
+
+        <label class="text-[10px] font-bold uppercase tracking-widest opacity-40 mb-2 px-2">History</label>
+        
+        <div id="patient-list" class="flex-1 overflow-y-auto pr-2 space-y-2 custom-scrollbar pb-10">
+            </div>
+
+        <div class="mt-auto pt-4 border-t flex justify-start px-2" style="border-color: var(--border-color)">
+            <button onclick="toggleTheme()" class="w-10 h-10 rounded-full border flex items-center justify-center hover:scale-110 transition-all active:scale-90" style="border-color: var(--border-color)">
+                <i id="theme-icon" data-lucide="sun" class="w-4 h-4"></i>
+            </button>
+        </div>
+    </aside>
+
+    <main id="main-scroll-area" onclick="closeAllMenus()">
+        <header class="flex gap-10 mb-8">
+            <button onclick="setView('etl')" id="btn-etl" class="text-sm font-medium border-b-2 border-blue-500 pb-2 transition-all">Pipeline</button>
+            <button onclick="setView('mining')" id="btn-mining" class="text-sm font-medium opacity-40 hover:opacity-100 pb-2 transition-all">Analytics</button>
+        </header>
+
+        <div id="view-etl" class="flex flex-col items-center justify-center min-h-[80%]">
+            <div id="welcome-screen" class="text-center mb-10">
+                <h1 id="welcome-title" class="text-4xl font-medium tracking-tight mb-3">Awaiting Clinical Note</h1>
+                <p id="welcome-subtitle" class="text-lg opacity-40 font-light">Enter data below to initiate AI extraction.</p>
+            </div>
+
+            <div class="w-full max-w-5xl px-8 mb-10">
+                <div class="glass-input p-2 flex items-center shadow-2xl">
+                    <input type="text" id="clinical-note" placeholder="Type clinical note for active patient..." 
+                           class="flex-1 bg-transparent px-6 py-3.5 text-base focus:outline-none"
+                           style="color: var(--text-color);"
+                           onkeypress="if(event.key === 'Enter') runExtraction()">
+                    <button onclick="runExtraction()" class="bg-blue-600 hover:bg-blue-500 text-white p-3 rounded-xl transition-all shadow-lg shadow-blue-600/20">
+                        <i data-lucide="arrow-up" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div id="results-display" class="w-full max-w-5xl px-8 hidden">
+                <div class="grid grid-cols-2 gap-4 mb-6">
+                    <div class="p-5 rounded-2xl border flex flex-col" style="border-color: var(--border-color); max-height: 250px;">
+                        <p class="text-[10px] font-bold uppercase tracking-widest opacity-40 mb-3">Conditions</p>
+                        <div id="res-conditions" class="flex-1 overflow-hidden"></div>
+                    </div>
+                    <div class="p-5 rounded-2xl border flex flex-col" style="border-color: var(--border-color); max-height: 250px;">
+                        <p class="text-[10px] font-bold uppercase tracking-widest opacity-40 mb-3">Medications</p>
+                        <div id="res-medications" class="flex-1 overflow-hidden"></div>
+                    </div>
+                </div>
+                <div class="p-8 glass-input" style="height: 300px;">
+                    <canvas id="extractionChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div id="view-mining" class="hidden">
+            <h1 class="text-3xl font-medium mb-8">Population Analytics</h1>
+            <div id="mining-content" class="grid grid-cols-1 gap-8 pb-10"></div>
+        </div>
+    </main>
+
+    <script>
+        let sessions = {};
+        let currentPatientId = null;
+        let mainChart = null;
+        let analyticsCharts = {}; 
+        let lastMiningData = null; 
+
+        window.onload = () => {
+            createNewPatient();
+            lucide.createIcons();
+        };
+
+        function createNewPatient() {
+            const newId = `PT-${Math.floor(1000 + Math.random() * 9000)}`;
+            sessions[newId] = { note: "", conditions: [], medications: [], isProcessed: false };
+            switchPatient(newId);
+        }
+
+        function switchPatient(id) {
+            if (currentPatientId && sessions[currentPatientId]) {
+                sessions[currentPatientId].note = document.getElementById('clinical-note').value;
+            }
+
+            currentPatientId = id;
+            renderSidebarList();
+
+            const data = sessions[id];
+            document.getElementById('clinical-note').value = data.note;
+
+            const resultsArea = document.getElementById('results-display');
+            const welcomeTitle = document.getElementById('welcome-title');
+            const welcomeSubtitle = document.getElementById('welcome-subtitle');
+
+            if (data.isProcessed) {
+                resultsArea.classList.remove('hidden');
+                welcomeTitle.innerText = `Results for ${id}`;
+                welcomeSubtitle.innerText = "Data successfully extracted and logged.";
+                
+                renderExtractionList('res-conditions', data.conditions, 'condition');
+                renderExtractionList('res-medications', data.medications, 'medication');
+                
+                updateMainChart(data.conditions.length, data.medications.length);
+            } else {
+                resultsArea.classList.add('hidden');
+                welcomeTitle.innerText = `Awaiting Note: ${id}`;
+                welcomeSubtitle.innerText = "Enter data below to initiate AI extraction.";
+            }
+        }
+
+        // === RENAME & DELETE LOGIC ===
+        function closeAllMenus() {
+            document.querySelectorAll('[id^="menu-"]').forEach(menu => {
+                menu.classList.add('hidden');
+            });
+        }
+
+        function togglePatientMenu(event, id) {
+            event.stopPropagation();
+            closeAllMenus();
+            const menu = document.getElementById(`menu-${id}`);
+            menu.classList.remove('hidden');
+        }
+
+        function renamePatient(event, oldId) {
+            event.stopPropagation();
+            closeAllMenus();
+            const newId = prompt("Enter new patient name:", oldId);
+            
+            if (newId && newId.trim() !== "" && newId !== oldId) {
+                if (sessions[newId]) {
+                    alert("A patient with this name already exists!");
+                    return;
+                }
+                
+                sessions[newId] = sessions[oldId];
+                delete sessions[oldId];
+                
+                if (currentPatientId === oldId) {
+                    currentPatientId = newId;
+                    switchPatient(newId); 
+                } else {
+                    renderSidebarList(); 
+                }
+            }
+        }
+
+        function deletePatient(event, id) {
+            event.stopPropagation();
+            closeAllMenus();
+            
+            if (confirm(`Are you sure you want to delete ${id}?`)) {
+                delete sessions[id];
+                
+                if (currentPatientId === id) {
+                    const remainingKeys = Object.keys(sessions);
+                    if (remainingKeys.length > 0) {
+                        switchPatient(remainingKeys[remainingKeys.length - 1]);
+                    } else {
+                        currentPatientId = null;
+                        createNewPatient();
+                    }
+                } else {
+                    renderSidebarList();
+                }
+            }
+        }
+
+        function renderSidebarList() {
+            const list = document.getElementById('patient-list');
+            list.innerHTML = '';
+            
+            Object.keys(sessions).reverse().forEach(id => {
+                const isActive = id === currentPatientId;
+                const bgClass = isActive ? 'bg-[var(--active-bg)] border-blue-500/30' : 'border-transparent hover:bg-[var(--list-sep)]';
+                const safeIdEscaped = id.replace(/'/g, "\\'"); 
+                
+                list.innerHTML += `
+                    <div class="group relative p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${bgClass}" onclick="switchPatient('${safeIdEscaped}')">
+                        <div class="flex items-center gap-3 overflow-hidden">
+                            <i data-lucide="user" class="w-4 h-4 flex-shrink-0 ${isActive ? 'text-blue-500' : 'opacity-50'}"></i>
+                            <span class="text-sm font-medium truncate ${isActive ? 'text-blue-500' : ''}" title="${id}">${id}</span>
+                        </div>
+                        
+                        <div class="relative flex-shrink-0">
+                            <button onclick="togglePatientMenu(event, '${safeIdEscaped}')" class="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--list-sep)] transition-all">
+                                <i data-lucide="more-vertical" class="w-4 h-4 opacity-50"></i>
+                            </button>
+                            
+                            <div id="menu-${id}" class="hidden absolute right-0 top-full mt-1 w-28 py-1 rounded-lg shadow-xl border z-50" style="background-color: var(--menu-bg); border-color: var(--border-color);">
+                                <button onclick="renamePatient(event, '${safeIdEscaped}')" class="w-full text-left px-4 py-2 text-xs hover:bg-[var(--list-sep)] transition-colors flex items-center gap-2">
+                                    <i data-lucide="edit-2" class="w-3 h-3"></i> Rename
+                                </button>
+                                <button onclick="deletePatient(event, '${safeIdEscaped}')" class="w-full text-left px-4 py-2 text-xs text-red-500 hover:bg-red-500/10 transition-colors flex items-center gap-2">
+                                    <i data-lucide="trash-2" class="w-3 h-3"></i> Delete
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            lucide.createIcons();
+        }
+
+        // === ENTITY TABLE RENDER & DELETE LOGIC ===
+        function renderExtractionList(containerId, items, type) {
+            const container = document.getElementById(containerId);
+            if (!items || items.length === 0) {
+                container.innerHTML = '<p class="text-sm font-medium opacity-50 px-2 mt-2">None detected</p>';
+                return;
+            }
+            
+            let html = '<div class="space-y-1 overflow-y-auto custom-scrollbar pr-2 h-full">';
+            items.forEach((item, index) => {
+                const safeItem = item.replace(/'/g, "\\'");
+                html += `
+                    <div class="group relative flex justify-between items-center p-2 rounded-lg hover:bg-[var(--list-sep)] transition-all border border-transparent hover:border-[var(--border-color)]">
+                        <span class="text-sm font-medium">${item}</span>
+                        
+                        <button onclick="deleteEntity(event, '${type}', ${index})" 
+                                class="p-1.5 rounded-md opacity-0 group-hover:opacity-100 text-red-500 hover:bg-red-500/10 transition-all cursor-pointer" 
+                                title="Delete">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        // function toggleEntityMenu(event, type, index) {
+        //     event.stopPropagation();
+        //     closeAllMenus();
+        //     document.getElementById(`menu-${type}-${index}`).classList.remove('hidden');
+        // }
+
+        async function deleteEntity(event, type, index) {
+            event.stopPropagation();
+            closeAllMenus();
+            
+            const entityName = type === 'condition' 
+                ? sessions[currentPatientId].conditions[index] 
+                : sessions[currentPatientId].medications[index];
+
+            try {
+                await fetch('http://127.0.0.1:8000/delete-entity', {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        patient_id: currentPatientId,
+                        entity_type: type,
+                        entity_name: entityName
+                    })
+                });
+            } catch (err) {
+                console.error("Database deletion failed:", err);
+                alert("Warning: Could not connect to database to delete item permanently.");
+            }
+            
+            if (type === 'condition') {
+                sessions[currentPatientId].conditions.splice(index, 1);
+            } else {
+                sessions[currentPatientId].medications.splice(index, 1);
+            }
+            
+            switchPatient(currentPatientId);
+        }
+
+        // === ETL PIPELINE ===
+        async function runExtraction() {
+            const noteInput = document.getElementById('clinical-note');
+            const note = noteInput.value;
+            if(!note) return;
+
+            document.getElementById('welcome-title').innerText = 'AI Processing...';
+            document.getElementById('welcome-title').classList.add('animate-pulse');
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/extract', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ patient_id: currentPatientId, raw_text: note })
+                });
+                
+                const data = await response.json();
+                
+                sessions[currentPatientId].isProcessed = true;
+                sessions[currentPatientId].note = note;
+                sessions[currentPatientId].conditions = data.extraction.conditions;
+                sessions[currentPatientId].medications = data.extraction.medications;
+
+                document.getElementById('welcome-title').classList.remove('animate-pulse');
+                switchPatient(currentPatientId); 
+
+            } catch (err) { 
+                alert("Check Backend Connection"); 
+                document.getElementById('welcome-title').classList.remove('animate-pulse');
+            }
+        }
+
+        // === THEME & NAVIGATION ===
+        function toggleTheme() {
+            const html = document.documentElement;
+            const icon = document.getElementById('theme-icon');
+            const mainArea = document.getElementById('main-scroll-area');
+            const savedScrollPos = mainArea ? mainArea.scrollTop : 0;
+
+            const isDark = !html.classList.contains('dark');
+            if (isDark) {
+                html.classList.add('dark');
+                icon.setAttribute('data-lucide', 'moon');
+                localStorage.setItem('theme', 'dark'); // Save to browser
+            } else {
+                html.classList.remove('dark');
+                icon.setAttribute('data-lucide', 'sun');
+                localStorage.setItem('theme', 'light'); // Save to browser
+            }
+            lucide.createIcons();
+            refreshChartColors();
+            if (mainArea) mainArea.scrollTop = savedScrollPos;
+        }
+
+        // Add this new function to read the saved theme
+        function initTheme() {
+            const savedTheme = localStorage.getItem('theme');
+            const html = document.documentElement;
+            const icon = document.getElementById('theme-icon');
+            
+            if (savedTheme === 'dark') {
+                html.classList.add('dark');
+                if(icon) icon.setAttribute('data-lucide', 'moon');
+            } else {
+                html.classList.remove('dark');
+                if(icon) icon.setAttribute('data-lucide', 'sun');
+            }
+        }
+
+        // Update your window.onload to call it
+        window.onload = () => {
+            initTheme(); // <--- Add this line
+            createNewPatient();
+            lucide.createIcons();
+        };
+
+        async function setView(view) {
+            const etl = document.getElementById('view-etl');
+            const mining = document.getElementById('view-mining');
+            const etlBtn = document.getElementById('btn-etl');
+            const miningBtn = document.getElementById('btn-mining');
+            const mainArea = document.getElementById('main-scroll-area');
+            const savedScrollPos = mainArea.scrollTop;
+
+            if(view === 'etl') {
+                etl.classList.remove('hidden'); mining.classList.add('hidden');
+                etlBtn.className = "text-sm font-medium border-b-2 border-blue-500 pb-2";
+                miningBtn.className = "text-sm font-medium opacity-40 hover:opacity-100 pb-2";
+            } else {
+                mining.classList.remove('hidden'); etl.classList.add('hidden');
+                miningBtn.className = "text-sm font-medium border-b-2 border-blue-500 pb-2";
+                etlBtn.className = "text-sm font-medium opacity-40 hover:opacity-100 pb-2";
+                if (!lastMiningData) fetchMiningData();
+            }
+            mainArea.scrollTop = savedScrollPos;
+        }
+
+        // === CHARTS & ANALYTICS ===
+        function refreshChartColors() {
+            if (mainChart) {
+                const cond = mainChart.data.datasets[0].data[0];
+                const med = mainChart.data.datasets[0].data[1];
+                updateMainChart(cond, med);
+            }
+            if (lastMiningData) {
+                const currentCondType = analyticsCharts['conditions']?.type || 'bar';
+                const currentMedType = analyticsCharts['medications']?.type || 'bar';
+                document.getElementById('mining-content').innerHTML = '';
+                createCard('Conditions', lastMiningData.top_conditions, 'condition', 'count', 'blue', currentCondType);
+                createCard('Medications', lastMiningData.top_medications, 'medication', 'count', 'purple', currentMedType);
+            }
+        }
+
+        function updateMainChart(cond, med) {
+            const ctx = document.getElementById('extractionChart').getContext('2d');
+            const isDark = document.documentElement.classList.contains('dark');
+            const textColor = isDark ? '#ffffff' : '#000000';
+            const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+
+            if (mainChart) mainChart.destroy();
+            mainChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Conditions', 'Medications'],
+                    datasets: [{ data: [cond, med], backgroundColor: ['#3b82f6', '#8b5cf6'], borderRadius: 10, barThickness: 40 }]
+                },
+                options: { 
+                    responsive: true, maintainAspectRatio: false, 
+                    plugins: { legend: { display: false } },
+                    scales: { 
+                        y: { beginAtZero: true, ticks: { stepSize: 1, color: textColor }, grid: { color: gridColor } }, 
+                        x: { ticks: { color: textColor }, grid: { display: false } } 
+                    }
+                }
+            });
+        }
+
+        async function fetchMiningData() {
+            const content = document.getElementById('mining-content');
+            content.innerHTML = '<p class="animate-pulse">Mining Database...</p>';
+            try {
+                const response = await fetch('http://127.0.0.1:8000/mine-data');
+                const data = await response.json();
+                lastMiningData = data.mining_results; 
+                content.innerHTML = ''; 
+                createCard('Conditions', lastMiningData.top_conditions, 'condition', 'count', 'blue', analyticsCharts['conditions']?.type || 'bar');
+                createCard('Medications', lastMiningData.top_medications, 'medication', 'count', 'purple', analyticsCharts['medications']?.type || 'bar');
+            } catch (err) { content.innerHTML = '<p class="text-red-500">Analytics Engine Offline.</p>'; }
+        }
+
+        function createCard(title, fullData, labelKey, valueKey, color, activeType = 'bar') {
+            const content = document.getElementById('mining-content');
+            const cardId = title.toLowerCase();
+            const cardHtml = `
+                <div class="glass-input p-8 mb-4">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="text-xs font-bold uppercase tracking-widest opacity-40">${title} Analysis</h3>
+                        <div class="flex gap-4 items-center">
+                            <span data-tooltip="Switch Chart View">
+                                <select onchange="changeChartType('${cardId}', this.value)" class="bg-transparent text-[10px] font-bold uppercase opacity-60 hover:opacity-100 cursor-pointer">
+                                    <option value="bar" ${activeType === 'bar' ? 'selected' : ''}>Bar Chart</option>
+                                    <option value="doughnut" ${activeType === 'doughnut' ? 'selected' : ''}>Doughnut Chart</option>
+                                    <option value="line" ${activeType === 'line' ? 'selected' : ''}>Line Chart</option>
+                                </select>
+                            </span>
+                            <button onclick="downloadCSV('${title}', ${JSON.stringify(fullData).replace(/"/g, '&quot;')})" data-tooltip="Download CSV">
+                                <i data-lucide="download" class="w-4 h-4 opacity-50 hover:opacity-100"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-8 items-center">
+                        <div class="space-y-2 max-h-[250px] overflow-y-auto custom-scrollbar pr-4">
+                            ${fullData.map(d => `<div class="flex justify-between text-sm py-2 item-row"><span>${d[labelKey]}</span><span class="font-bold text-blue-500">${d[valueKey]}</span></div>`).join('')}
+                        </div>
+                        <div style="height: 250px;"><canvas id="chart-${cardId}"></canvas></div>
+                    </div>
+                </div>
+            `;
+            content.insertAdjacentHTML('beforeend', cardHtml);
+            lucide.createIcons();
+            initAnalyticsChart(cardId, fullData, labelKey, valueKey, color, activeType);
+        }
+
+        function initAnalyticsChart(id, fullData, labelKey, valueKey, color, type) {
+            const ctx = document.getElementById(`chart-${id}`).getContext('2d');
+            const isDark = document.documentElement.classList.contains('dark');
+            const textColor = isDark ? '#ffffff' : '#000000';
+            const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+            const themeColor = color === 'blue' ? '#3b82f6' : '#8b5cf6';
+
+            if (analyticsCharts[id]?.instance) analyticsCharts[id].instance.destroy();
+
+            // THIS line perfectly slices your list so ONLY the top 5 appear on the graph!
+            const chartData = fullData.slice(0, 5);
+
+            const instance = new Chart(ctx, {
+                type: type,
+                data: {
+                    labels: chartData.map(d => d[labelKey]),
+                    datasets: [{
+                        data: chartData.map(d => d[valueKey]),
+                        backgroundColor: type === 'doughnut' ? ['#3b82f6', '#8b5cf6', '#06b6d4', '#f43f5e', '#f59e0b'] : themeColor,
+                        borderColor: type === 'line' ? themeColor : 'transparent',
+                        borderWidth: type === 'line' ? 3 : 0,
+                        tension: 0.4,
+                        pointRadius: type === 'line' ? 4 : 0,
+                        borderRadius: type === 'bar' ? 8 : 0,
+                        cutout: '70%'
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: type === 'doughnut', labels: { color: textColor } } },
+                    scales: type === 'doughnut' ? {} : {
+                        y: { beginAtZero: true, ticks: { color: textColor }, grid: { color: gridColor } },
+                        x: { ticks: { color: textColor }, grid: { display: false } }
+                    }
+                }
+            });
+            analyticsCharts[id] = { instance, type };
+        }
+
+        function changeChartType(id, type) {
+            const dataKey = id === 'conditions' ? 'top_conditions' : 'top_medications';
+            const fullData = lastMiningData[dataKey];
+            const labelKey = id === 'conditions' ? 'condition' : 'medication';
+            const colorKey = id === 'conditions' ? 'blue' : 'purple';
+            
+            initAnalyticsChart(id, fullData, labelKey, 'count', colorKey, type);
+        }
+
+        function downloadCSV(title, data) {
+            const headers = Object.keys(data[0]);
+            const rows = [headers.join(','), ...data.map(row => headers.map(h => JSON.stringify(row[h])).join(','))];
+            const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+            saveAs(blob, `${title}_Report.csv`);
+        }
+    </script>
+</body>
+</html>
