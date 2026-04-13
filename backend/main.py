@@ -81,3 +81,59 @@ def process_clinical_note(note: ClinicalNote, db: Session = Depends(get_db)):
         "patient_id": patient.patient_id,
         "extracted_data": ai_results
     }
+
+from sqlalchemy import text
+# (Make sure you already have your db connection imports at the top of the file, 
+# like: from database import SessionLocal)
+
+@app.get("/mine-data")
+def mine_clinical_data():
+    db = SessionLocal()
+    try:
+        # 1. Mine Top Conditions (Frequency Analysis)
+        query_conditions = text("""
+            SELECT c.condition_name, COUNT(f.extraction_id) as frequency
+            FROM fact_clinical_extraction f
+            JOIN dim_condition c ON f.condition_key = c.condition_key
+            GROUP BY c.condition_name
+            ORDER BY frequency DESC
+            LIMIT 5;
+        """)
+        top_conditions = [{"condition": row[0], "count": row[1]} for row in db.execute(query_conditions).fetchall()]
+
+        # 2. Mine Top Medications (Frequency Analysis)
+        query_meds = text("""
+            SELECT m.medication_name, COUNT(f.extraction_id) as frequency
+            FROM fact_clinical_extraction f
+            JOIN dim_medication m ON f.medication_key = m.medication_key
+            GROUP BY m.medication_name
+            ORDER BY frequency DESC
+            LIMIT 5;
+        """)
+        top_medications = [{"medication": row[0], "count": row[1]} for row in db.execute(query_meds).fetchall()]
+
+        # 3. Association Rule Mining (Co-occurrence of Disease + Drug)
+        # "Which medications are most frequently prescribed for which conditions?"
+        query_associations = text("""
+            SELECT c.condition_name, m.medication_name, COUNT(*) as co_occurrence
+            FROM fact_clinical_extraction f
+            JOIN dim_condition c ON f.condition_key = c.condition_key
+            JOIN dim_medication m ON f.medication_key = m.medication_key
+            GROUP BY c.condition_name, m.medication_name
+            ORDER BY co_occurrence DESC
+            LIMIT 10;
+        """)
+        associations = [{"condition": row[0], "medication": row[1], "frequency": row[2]} for row in db.execute(query_associations).fetchall()]
+
+        return {
+            "status": "success",
+            "mining_results": {
+                "top_conditions": top_conditions,
+                "top_medications": top_medications,
+                "frequent_associations": associations
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()
